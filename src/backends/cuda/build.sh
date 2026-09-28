@@ -15,10 +15,10 @@
 # `generated.cu` and compiling only that with nvcc is a separate change, and the
 # model owner's call.
 #
-#   BUILD_STAGE=<dir>   stage the export there (default: a fresh mktemp -d)
+#   BUILD_STAGE=<dir>   stage the export there and retain it (default: mktemp -d)
 #   KEEP_STAGE=1        keep the staging directory and print its path
 #   PYTHON=<python>     interpreter for the tools (default: python3, else python)
-#   NVCC / CUDA_HOME    as tools/build.py reads them
+#   CUDA_HOME=<dir>     CUDA toolkit root (default: /usr/local/cuda)
 #
 # A checkpoint is not needed here. `tools/export_tables.py` needs one; it is a
 # separate step in the recipe and is not required to produce the library.
@@ -56,11 +56,11 @@ fi
 stage=${BUILD_STAGE:-}
 if [ -z "$stage" ]; then
     stage=$(mktemp -d "${TMPDIR:-/tmp}/laya-cuda.XXXXXX")
+    if [ -z "${KEEP_STAGE:-}" ]; then
+        trap 'rm -rf "$stage"' EXIT
+    fi
 else
     mkdir -p "$stage"
-fi
-if [ -z "${KEEP_STAGE:-}" ]; then
-    trap 'rm -rf "$stage"' EXIT
 fi
 
 echo "build.sh: staging in $stage"
@@ -74,9 +74,11 @@ if [ ! -f "$library" ]; then
 fi
 
 mkdir -p "$out"
-cp "$library" "$out/liblaya_cuda.so"
-if [ -f "$stage/build-manifest.json" ]; then
-    cp "$stage/build-manifest.json" "$out/build-manifest.json"
+if ! [ "$stage" -ef "$out" ]; then
+    cp "$library" "$out/liblaya_cuda.so"
+    if [ -f "$stage/build-manifest.json" ]; then
+        cp "$stage/build-manifest.json" "$out/build-manifest.json"
+    fi
 fi
 
 echo "build.sh: built $out/liblaya_cuda.so for sm_${arch}a"
