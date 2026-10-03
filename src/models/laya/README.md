@@ -6,7 +6,7 @@ GPU operations and kernel implementations belong in [`backends/cuda/`](../../bac
 
 The `omni-laya` crate currently reads and checks the English Laya 0.3.20 checkpoint. `Config::load` validates the architecture and temperatures; `Weights` checks tensor names and shapes and converts FP32, FP16 and BF16 values. `checkpoint_tensors()` lists the 206 expected tensors. Each backend chooses its own storage precision.
 
-Keep checkpoint files unchanged while `Weights` holds a read-only memory mapping. This crate does not yet execute inference.
+Keep checkpoint files unchanged while `Weights` holds a read-only memory mapping. The eager encoder is described below; complete request-to-result inference is not yet implemented.
 
 ## CPU checks
 
@@ -72,10 +72,35 @@ allocation and transfer, not model numerics or latency. Prerequisites and comman
 are in the
 [native validation recipe](../../../recipe/laya/README.md#native-residency-and-workspace-validation).
 
+## Eager encoder
+
+`Encoder::load(&cuda, checkpoint, bundle)` loads the existing trusted native Laya
+bundle and resident weights. `run(ids, lengths, types, &workspace)` executes all
+28 encoder layers and both decision transformer layers, synchronizes, and leaves
+FP32 hidden states in `workspace.buffers().residual`. Padded rows have length zero.
+IDs must be within the vocabulary; lengths and types are checked before upload.
+
+This uses the existing original RoPE entry point and dynamic full/local attention.
+No Scorer, output decoding, HTTP service, Graph capture or cache is included.
+The resource library supplied to `Cuda::load` remains separate from the operator
+bundle; CPU builds need neither library. The operator bundle currently targets
+Hopper `sm_90a`. `Encoder::load` is unsafe because callers must trust the native
+code and provide a compatible GPU; hashes bind artifacts, not code trust.
+
+Build prerequisites, bundle preparation and the GPU test commands are in the
+[native encoder validation recipe](../../../recipe/laya/README.md#native-encoder-validation).
+Startup checks checkpoint and bundle hashes before loading operator code.
+
+The test checks selected encoder intermediates, both head layers, final hidden
+states, shape changes and repeated workspace reuse. It compares valid tokens;
+empty-key padding differs intentionally from the original attention. Candidate
+padding must still be finite. This is numerical parity, not model quality or a
+performance benchmark. The intermediate capture hooks compile only in tests.
+
 ## Python worker
 
 The Python worker serves LAYA through laya-serve on CPU and Apple Silicon (PyTorch MPS,
-validated on an M1 Pro and, by another contributor, an M5). No native CUDA or Metal backend yet.
+validated on an M1 Pro and, by another contributor, an M5). This worker uses PyTorch for model execution.
 
 - [`src/frontend/laya_mps.py`](../../frontend/laya_mps.py): the HTTP worker. laya-serve (`laya[serve]==0.3.20`)
   with its request handling unchanged, started as `PYTHONPATH=src python -m frontend.laya_mps --device mps`.
