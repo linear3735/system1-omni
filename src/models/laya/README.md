@@ -20,9 +20,13 @@ state and an object of questions. Public fields and `Serialize` remain available
 `Request` does not implement generic `Deserialize`, so use these explicit entries
 instead of `serde_json::from_str::<Request>` or `serde_json::from_value::<Request>`.
 
+`decision::decode` converts raw option and action logits into answers, probabilities and confidence. Rows follow `Prepared.questions`; option logits follow marker order, and action rows contain two logits with "act" first. It applies the configured temperatures and preserves question and option order. It rejects inconsistent rows, invalid metadata, non-finite values and temperature-scaling overflow. Callers retain `Prepared.usage` and add routing and HTTP response fields.
+
 ## CPU checks
 
 The normal workspace tests cover configuration errors, malformed tensors, inventory mismatches and conversion boundaries without downloading weights.
+
+They also compare decoding against a checked-in 16-case reference from Laya 0.3.20, PyTorch 2.14.0 and NumPy 2.5.3. Those rounded answers must match exactly. The cases cover all three question types, temperature buckets and clamps, ties, single options, ordering and rounding boundaries. A separate 16-option probe covers FP32 reduction differences: the first probability is 0.0100 in Rust and 0.0101 in NumPy. That probe allows one displayed decimal unit for probabilities and requires all other fields to match. This is not a universal error bound; scorer integration must check real model outputs. Commands and reference regeneration are in the [native decoder validation recipe](../../../recipe/laya/README.md#native-decoder-validation). These fixed logits test decoding, not model quality or GPU execution.
 
 To check the complete checkpoint, use `convaiinnovations/laya` revision `55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851` and a Python environment with PyTorch, safetensors and NumPy:
 

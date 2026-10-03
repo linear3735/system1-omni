@@ -100,3 +100,28 @@ question type, row length, question order and usage count; it excludes backend
 padding and bucket dimensions. The [reference generator and inputs](https://github.com/linear3735/system1-omni/tree/5e4dd4215c925ebd93bb9ce4097b27bd6375f7c0/recipe/laya/native)
 use `laya==0.3.20`. Packing parity does not measure model quality or execute
 native model inference.
+
+## Native decoder validation
+
+Run the CPU decoding checks without Python, weights or a GPU:
+
+```sh
+cargo test --locked -p omni-laya --test decision
+```
+
+The checked-in reference covers all three question types, temperatures, ordering,
+ties and rounding boundaries. Its 16 cases require exact rounded answers; a
+separate FP32 reduction probe allows one displayed decimal unit for probabilities.
+These fixed logits check decoding, not model quality or GPU execution.
+
+To regenerate the reference, use `laya==0.3.20`, `torch==2.14.0` and
+`numpy==2.5.3`, matching the recorded fixture. Supply the English checkpoint
+`convaiinnovations/laya` at revision `55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`:
+
+```sh
+export LAYA_CHECKPOINT=/path/to/laya/snapshot
+python recipe/laya/native/export_decisions.py "$LAYA_CHECKPOINT" /path/to/new-decisions.json
+```
+
+The generator reads only `rl_agent_config.json` and calls Laya's official CPU
+decoding functions. The output records source hashes and package versions.
