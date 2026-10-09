@@ -303,6 +303,17 @@ impl Processor {
         )
     }
 
+    fn check_length(&self, t: usize) -> Result<(), Reject> {
+        if t > self.max_length {
+            return Err(Reject::bad_request(format!(
+                "This model's maximum context length is {} tokens. However, you requested 1 output tokens and your prompt contains at least {t} input tokens, for a total of at least {} tokens. Please reduce the length of the input prompt or the number of requested output tokens. (parameter=input_tokens, value={t})",
+                self.max_length,
+                t + 1
+            )));
+        }
+        Ok(())
+    }
+
     fn finish_c(
         &self,
         input_tokens: usize,
@@ -312,14 +323,7 @@ impl Processor {
         start: Instant,
         cache_note: String,
     ) -> Result<PreparedRequest, Reject> {
-        let t = input_tokens;
-        if t > self.max_length {
-            return Err(Reject::bad_request(format!(
-                "This model's maximum context length is {} tokens. However, you requested 1 output tokens and your prompt contains at least {t} input tokens, for a total of at least {} tokens. Please reduce the length of the input prompt or the number of requested output tokens. (parameter=input_tokens, value={t})",
-                self.max_length,
-                t + 1
-            )));
-        }
+        self.check_length(input_tokens)?;
         Ok(PreparedRequest {
             plan,
             readout,
@@ -327,7 +331,7 @@ impl Processor {
             context: ResponseContext {
                 kind: compiled.kind,
                 options: compiled.options.clone(),
-                input_tokens: t,
+                input_tokens,
                 start,
             },
         })
