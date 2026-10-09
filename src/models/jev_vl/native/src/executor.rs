@@ -179,38 +179,38 @@ impl LabelHead {
     }
 }
 
-/// One image block in the expanded request (adapted rows borrowed from L2).
-pub struct ImgBlock {
+/// One image block, with CPU input or resolved adapted rows borrowed from L2.
+pub struct ImgBlock<T = Arc<ImageAsset>> {
     /// Global expanded-id row of the first pad.
     pub start: usize,
     /// Global expanded-id row one past the last pad.
     pub end: usize,
-    /// Parsed adapter output (grid + rows), shared with the L2 cache.
-    pub asset: Arc<ImageAsset>,
+    /// Image input before resolution, or the completed grid + adapted rows.
+    pub asset: T,
 }
 
 /// Full expanded ids + absolute positions + image blocks (global coordinates).
-pub struct PreparedMm {
+pub struct PreparedMm<T = Arc<ImageAsset>> {
     pub ids: Vec<u32>,
     pub positions: [Vec<i64>; 3],
-    pub blocks: Vec<ImgBlock>,
+    pub blocks: Vec<ImgBlock<T>>,
 }
 
 /// The cached-prefix continuation slice of one request.
-pub struct ContinueMm {
+pub struct ContinueMm<T = Arc<ImageAsset>> {
     /// Rows [p, T): (pads_end - p) pads, <|vision_end|>, fresh tail tokens.
     pub ids: Vec<u32>,
     /// Absolute positions for those rows.
     pub positions: [Vec<i64>; 3],
     /// The image rows within the slice (the last block's tail), if any.
-    pub block: Option<SuffixBlock>,
+    pub block: Option<SuffixBlock<T>>,
     /// L3 device state of the prefix.
     pub state: Arc<omni_qwen3_5_native::model::PrefixState>,
 }
 
 /// The image rows of one continuation slice: an offset range of one asset's rows.
-pub struct SuffixBlock {
-    pub asset: Arc<ImageAsset>,
+pub struct SuffixBlock<T = Arc<ImageAsset>> {
+    pub asset: T,
     /// First adapted-row index feeding the slice (= p - pads_start).
     pub row_offset: usize,
     /// Number of rows = number of pads leading the slice.
@@ -218,20 +218,20 @@ pub struct SuffixBlock {
 }
 
 /// The inputs and cached state needed to execute one request.
-pub enum MmPlan {
+pub enum MmPlan<T = Arc<ImageAsset>> {
     /// Text-only prompt.
     Text { ids: Vec<u32> },
     /// Full multimodal prefill.
-    Full(PreparedMm),
+    Full(PreparedMm<T>),
     /// Structure recorded but its device state is not built yet: run the capture
     /// phase over rows [0, p) followed by the continuation over [p, T), then
     /// publish the state so later requests go straight to `Continue`.
     Populate {
-        mm: PreparedMm,
+        mm: PreparedMm<T>,
         record: Arc<crate::caches::PrefixRecord>,
     },
     /// Cached-prefix hit: only the continuation slice runs.
-    Continue(ContinueMm),
+    Continue(ContinueMm<T>),
 }
 
 pub struct Executor {
