@@ -1,7 +1,8 @@
 # JEV-27B-VL experimental native recipe
 
 This recipe serves `autotrust/JEV-27B-VL` System-1 decisions with Rust/CUDA.
-Text runs natively; images must first be encoded offline by Transformers.
+Text runs natively. Images can use the shared native vision backend or assets
+encoded offline by Transformers.
 The [model contract](../../src/models/jev_vl/README.md) explains the single-question
 API, verbalizer head and cache ownership. The reviewed candidate passed a
 [bounded H800 validation](validation.md#historical-h800-validation);
@@ -81,10 +82,41 @@ checks. The frontend routes `/health` and `/v1/systemone`; it does not proxy
 generation routes such as `/v1/chat/completions`. An unknown route returns the
 frontend's own 404 rather than this worker's error envelope.
 
-## Prepare images before serving
+## Online images
 
-The worker does not decode images, fetch URLs or invoke a vision tower on cache
-miss. First prepare a JSONL manifest with one object per line containing a
+Export the vision tower separately from the same pinned source checkpoint.
+The CPU exporter preserves BF16 vision weights and pins the processor and source
+files. It does not rewrite the language export:
+
+```sh
+CUDA_VISIBLE_DEVICES='' .venv-jev-vl/bin/python recipe/jev_vl/export_vision.py \
+  --model weights/JEV-27B-VL --out weights/jev-vl-vision
+JEV_VL_MODEL=weights/jev-vl-merged JEV_VL_VISION=weights/jev-vl-vision \
+  JEV_VL_CUDA_LIB=$PWD/target/release/libqwen3_5_cuda.so \
+  JEV_VL_CACHE=1 target/release/omni-jev-vl-native
+```
+
+Online mode accepts single-frame inline PNG/JPEG data URIs. Each image is bounded
+to 4 MiB of decoded file bytes, 2048 pixels per side, 1,048,576 source pixels,
+and 4608 vision patches. The full HTTP body is limited to 4 MiB, including base64
+and text. Remote URLs, animations and video are unsupported. Oversized inputs
+are rejected; resource limits do not change the model's resize policy.
+
+`JEV_VL_VISION` and `JEV_VL_IMGCACHE` are mutually exclusive. Online mode also
+ignores the default `imgcache/` directory. The source and processor stay fixed
+for the worker lifetime. A new image runs decode, preprocessing and vision
+inside the request; repeated images reuse the bounded L2 cache. Vision and
+language execution share the existing serial scheduler. Rebuild the CUDA library
+to include the shared 27B vision entry points.
+
+Historical prepared-image measurements below do not validate this online path
+or include its vision cost. Compare fresh images and repeated-image questions
+separately against the official model before reporting online performance.
+
+## Prepared images
+
+Without `JEV_VL_VISION`, the worker reads prepared assets on cache miss.
+First prepare a JSONL manifest with one object per line containing a
 `request` whose `state` includes `{"image":"data:image/png;base64,..."}`. The
 preencoder accepts base64 data URIs; a fresh URL or changed image needs a new
 asset. It runs on a GPU and should finish before starting the language worker
@@ -111,7 +143,7 @@ not an end-to-end live screenshot service.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `JEV_VL_CACHE` | `1` | Master enable; `0` uses a full language forward and rereads prepared image assets. |
+| `JEV_VL_CACHE` | `1` | Master enable; `0` uses a full language forward and recomputes online vision or rereads prepared assets. |
 | `JEV_VL_L1`, `JEV_VL_L2`, `JEV_VL_L3` | `1` | Processor records, parsed image assets, and language-prefix state. |
 | `JEV_VL_L1_MAX` | `256` | Maximum resident processor records. |
 | `JEV_VL_L2_BYTES` | `1073741824` | Parsed image-asset cache budget. |

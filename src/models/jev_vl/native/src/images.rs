@@ -19,6 +19,13 @@ pub enum ImageInput {
 }
 
 impl ImageInput {
+    pub(crate) fn n_tokens(&self) -> usize {
+        match self {
+            Self::Ready(asset) => asset.n_tokens(),
+            Self::Inline { pixels, .. } => pixels.image_tokens(),
+        }
+    }
+
     pub fn grid_thw(&self) -> [i64; 3] {
         match self {
             Self::Ready(asset) => asset.grid_thw,
