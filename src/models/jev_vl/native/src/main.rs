@@ -17,6 +17,7 @@ use omni_qwen3_5_native::cuda;
 use serde_json::{Value, json};
 
 const WARMUP: &[u8] = br#"{"kind":"choice","state":"Dialog: Update installed.","question":"Close it?","options":["OK","Wait"]}"#;
+const ONLINE_VISION_WARMUP: &[u8] = br#"{"kind":"choice","state":[{"image":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"}],"question":"Is the image loaded?","options":["OK","Wait"]}"#;
 
 fn reject(r: Reject) -> Response {
     (
@@ -141,6 +142,12 @@ async fn main() -> Result<()> {
         decide(&engine, WARMUP).await.status() == StatusCode::OK,
         "warmup failed"
     );
+    if std::env::var_os("JEV_VL_VISION").is_some() {
+        ensure!(
+            decide(&engine, ONLINE_VISION_WARMUP).await.status() == StatusCode::OK,
+            "online vision warmup failed"
+        );
+    }
     let host = std::env::var("JEV_VL_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let port: u16 = std::env::var("JEV_VL_PORT")
         .map_or(Ok(8001), |v| v.parse())
