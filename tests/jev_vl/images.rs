@@ -61,7 +61,7 @@ fn meshgrid_helper_matches_expand_rows() {
     let text_ids: Vec<u32> = vec![300, 301, PAD, 302];
     let e = expand(&text_ids, PAD, &[asset([1, 4, 6])]).unwrap();
     let b = &e.blocks[0];
-    for from in 0..6usize {
+    for from in 0..=6usize {
         let got = meshgrid_positions([1, 4, 6], b.base, from, 6 - from);
         for (want, have) in e.positions.iter().zip(&got) {
             assert_eq!(&want[b.start + from..b.end], &have[..], "slice from {from}");

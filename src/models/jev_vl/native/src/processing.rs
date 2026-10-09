@@ -236,13 +236,24 @@ impl Processor {
             let suffix_pads = pads_end - p;
             let input_tokens = p + suffix_pads + 1 + tail_ids.len();
             self.check_length(input_tokens)?;
-            let asset = self.load_image(&compiled.images[0])?;
             let mut ids = Vec::with_capacity(suffix_pads + 1 + tail_ids.len());
             ids.extend(std::iter::repeat_n(self.image_pad, suffix_pads));
             ids.push(self.vision_end);
             ids.extend_from_slice(&tail_ids);
-            let mut pos =
-                images::meshgrid_positions(asset.grid_thw(), base_pad, p - pads_start, suffix_pads);
+            let suffix_asset = if suffix_pads > 0 {
+                Some(self.load_image(&compiled.images[0])?)
+            } else {
+                None
+            };
+            let mut pos = match &suffix_asset {
+                Some(asset) => images::meshgrid_positions(
+                    asset.grid_thw(),
+                    base_pad,
+                    p - pads_start,
+                    suffix_pads,
+                ),
+                None => [Vec::new(), Vec::new(), Vec::new()],
+            };
             let after = base_pad + advance;
             for k in 0..(ids.len() - suffix_pads) as i64 {
                 pos[0].push(after + k);
@@ -252,7 +263,7 @@ impl Processor {
             match (cfg.l3, record.state()) {
                 (true, Some(state)) => {
                     self.caches.l3_hit();
-                    let block = Some(SuffixBlock {
+                    let block = suffix_asset.map(|asset| SuffixBlock {
                         asset,
                         row_offset: p - pads_start,
                         rows: suffix_pads,
@@ -273,6 +284,10 @@ impl Processor {
                 }
                 (true, None) => {
                     self.caches.l3_miss();
+                    let asset = match suffix_asset {
+                        Some(asset) => asset,
+                        None => self.load_image(&compiled.images[0])?,
+                    };
                     let mm = rebuild_full(&ids, &pos, &record.meta, &asset);
                     return self.finish_c(
                         mm.ids.len(),
@@ -284,6 +299,10 @@ impl Processor {
                     );
                 }
                 (false, _) => {
+                    let asset = match suffix_asset {
+                        Some(asset) => asset,
+                        None => self.load_image(&compiled.images[0])?,
+                    };
                     let mm = rebuild_full(&ids, &pos, &record.meta, &asset);
                     return self.finish_c(
                         mm.ids.len(),
