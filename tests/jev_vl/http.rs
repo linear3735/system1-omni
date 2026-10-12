@@ -6,6 +6,22 @@ use std::time::Duration;
 
 use super::*;
 
+#[test]
+fn online_vision_startup_warmup_is_inline_image_decision() {
+    let labels = vec!["OK".to_owned(), "Wait".to_owned()];
+    let compiled = omni_jev_vl_native::contract::compile(ONLINE_VISION_WARMUP, &labels).unwrap();
+    assert_eq!(compiled.images.len(), 1);
+    let image = omni_qwen3_5_native::image_decode::decode_data_url(&compiled.images[0]).unwrap();
+    let pixels = omni_qwen3_5_native::image_preprocess::preprocess_rgb8(
+        image.width,
+        image.height,
+        &image.rgb,
+    )
+    .unwrap();
+    assert_eq!(pixels.image_grid_thw, [1, 16, 16]);
+    assert_eq!(pixels.image_tokens(), 64);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_model_chat_probe_returns_canonical_worker_error() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

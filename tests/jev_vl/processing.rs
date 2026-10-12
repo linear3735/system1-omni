@@ -348,3 +348,52 @@ fn disabling_l2_retains_typed_images_and_does_not_publish_embeddings_on_cpu() {
         assert_eq!(processor.caches.snapshot().l2_records, 0);
     }
 }
+
+#[test]
+fn aligned_image_end_still_loads_images_without_a_live_prefix() {
+    for l3 in [false, true] {
+        let mut processor = online_processor(true, false);
+        processor.caches = Caches::new(CacheCfg {
+            enabled: true,
+            l1: true,
+            l2: false,
+            l3,
+            l1_max: 8,
+            l2_bytes: 0,
+            l3_bytes: 1 << 20,
+        });
+        let request = (0..64)
+            .map(|padding| {
+                let mut request = image_request(&[RED]);
+                request["state"] = serde_json::json!(["align ".repeat(padding), {"image": RED}]);
+                request
+            })
+            .find(|request| {
+                let compiled =
+                    contract::compile(&serde_json::to_vec(request).unwrap(), &processor.labels)
+                        .unwrap();
+                let ids = processor.tokenize(&compiled.prompt).unwrap();
+                (ids.iter()
+                    .position(|&id| id == processor.image_pad)
+                    .unwrap()
+                    + 64)
+                    % 64
+                    == 0
+            })
+            .unwrap();
+        let cold = prepare_request(&processor, &request).unwrap();
+        let before = processor.caches.snapshot();
+        let warm = prepare_request(&processor, &request).unwrap();
+        assert!(warm.cache_note.contains("l1=hit"));
+        assert!(processor.caches.snapshot().l2_miss > before.l2_miss);
+        let full = |plan| match plan {
+            MmPlan::Full(mm) | MmPlan::Populate { mm, .. } => mm,
+            _ => panic!("no live GPU prefix exists"),
+        };
+        let (cold, warm) = (full(cold.plan), full(warm.plan));
+        assert_eq!(cold.ids, warm.ids);
+        assert_eq!(cold.positions, warm.positions);
+        assert_eq!(warm.blocks[0].end % 64, 0);
+        assert_eq!(warm.blocks[0].asset.n_tokens(), 64);
+    }
+}
