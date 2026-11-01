@@ -21,8 +21,13 @@ umask 077
 : "${SLURM_JOB_ID:?submit through sbatch}"
 
 run_dir=$(cd "$(dirname "$0")" && pwd)
+# run.env 里是普通赋值，不导出的话 exec 之后的 run_h800.sh 一个都收不到：
+# 实测作业会在分配里立刻以 "RUN_DIR: RUN_DIR is required" 死掉。set -a 覆盖全部键，
+# 包括 STAGES——它若丢失，作业会静默退回脚本自己的默认阶段集。
+set -a
 # shellcheck source=/dev/null
 . "$run_dir/run.env"
+set +a
 
 # The archive is packed at the repository root, so it has to unpack into src/
 # for SRC_DIR to really be the repository root.
