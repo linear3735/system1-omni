@@ -231,12 +231,8 @@ run_job() {
 
     deadline=$(( $(date +%s) + wait_seconds ))
     state=
+    query_fail=0
     while :; do
-        state=$(ssh_run "$prologue squeue -h -j '$job_id' -o %T" | tr -d '[:space:]')
-        [ -n "$state" ] || state=PENDING_OR_GONE
-        case "$state" in
-            COMPLETED | FAILED | CANCELLED | TIMEOUT | NODE_FAIL | OUT_OF_MEMORY | PREEMPTED | BOOT_FAIL | DEADLINE) break ;;
-        esac
         if [ "$(date +%s)" -ge "$deadline" ]; then
             printf 'dispatch: job %s is still %s after %ss; leaving it running\n' "$job_id" "$state" "$wait_seconds" >&2
             if [ "$cancel_on_timeout" = 1 ]; then
@@ -247,6 +243,27 @@ run_job() {
             fi
             exit 3
         fi
+        # A successful empty response means the job left the queue: hand it to the
+        # accounting grace below. A failed query is unknown, never "done": retry
+        # quickly instead of burning a whole poll interval on it.
+        if queue_out=$(ssh_run "$prologue squeue -h -j '$job_id' -o %T" 2>/dev/null); then
+            query_fail=0
+            state=$(printf '%s' "$queue_out" | tr -d '[:space:]')
+            [ -n "$state" ] || break
+            case "$state" in
+                COMPLETED | FAILED | CANCELLED | TIMEOUT | NODE_FAIL | OUT_OF_MEMORY | PREEMPTED | BOOT_FAIL | DEADLINE) break ;;
+            esac
+        else
+            query_fail=$(( query_fail + 1 ))
+            state=QUERY_FAILED
+            printf 'dispatch: squeue query for job %s failed (%s in a row)\n' "$job_id" "$query_fail" >&2
+            if [ "$query_fail" -ge 3 ]; then
+                printf 'dispatch: cannot read the queue state for job %s: unknown, not failed\n' "$job_id" >&2
+                printf 'dispatch: keep this JobID and query again later; receipt %s\n' "$receipt" >&2
+                exit 3
+            fi
+            continue
+        fi
         sleep 20
     done
 
@@ -255,7 +272,14 @@ run_job() {
     final=
     grace_deadline=$(( $(date +%s) + 120 ))
     while :; do
-        final=$(ssh_run "$prologue sacct -j '$job_id' -X -n -P -o State,ExitCode" | head -1 | tr -d '[:space:]')
+        # Late accounting and unreadable accounting are both unknown: keep the
+        # receipt, keep waiting, never resubmit.
+        if accounting=$(ssh_run "$prologue sacct -j '$job_id' -X -n -P -o State,ExitCode" 2>/dev/null); then
+            final=$(printf '%s\n' "$accounting" | head -1 | tr -d '[:space:]')
+        else
+            final=
+            printf 'dispatch: sacct query for job %s failed; accounting is still unknown\n' "$job_id" >&2
+        fi
         [ -n "$final" ] && break
         if [ "$(date +%s)" -ge "$grace_deadline" ]; then
             printf 'dispatch: no sacct record for job %s yet (last squeue state %s): unknown, not failed\n' "$job_id" "$state" >&2
@@ -267,20 +291,34 @@ run_job() {
     printf 'slurm      %s\n' "$final"
 
     mkdir -p "$artifacts"
-    # Evidence only: out/cuda-build is real compiler output and is kept, caches
-    # and model weights are not.
-    remote_kb=$(ssh_run "cd '$run_dir' && du -sk out 2>/dev/null | cut -f1" | tail -1 | tr -d '[:space:]')
-    remote_mb=$(( ${remote_kb:-0} / 1024 ))
-    printf 'evidence   %s MB (cap %s MB)\n' "$remote_mb" "$evidence_max_mb"
-    if [ "$remote_mb" -gt "$evidence_max_mb" ]; then
-        printf 'dispatch: evidence is %s MB, over the %s MB cap; refusing to pull it back.\n' \
-            "$remote_mb" "$evidence_max_mb" >&2
+    # The size check and the archive must use one file set and one exclude rule,
+    # or the cap can be bypassed: measuring only out/ while packing run.env and
+    # the Slurm logs is exactly the leak.
+    evidence_paths="out run.env slurm-*.out slurm-*.err"
+    evidence_excludes="--exclude=target --exclude=__pycache__ --exclude='*.gguf' --exclude='*.safetensors'"
+    cap_kib=$(( evidence_max_mb * 1024 ))
+    remote_kib=$(ssh_run "cd '$run_dir' && du -sk $evidence_excludes $evidence_paths 2>/dev/null | awk '{s+=\$1} END {print s+0}'" | tail -1 | tr -d '[:space:]')
+    remote_kib=${remote_kib:-0}
+    printf 'evidence   %s KiB (cap %s KiB = %s MB)\n' "$remote_kib" "$cap_kib" "$evidence_max_mb"
+    if [ "$remote_kib" -gt "$cap_kib" ]; then
+        printf 'dispatch: evidence is %s KiB, over the %s KiB cap; refusing to pull it back.\n' \
+            "$remote_kib" "$cap_kib" >&2
         printf 'dispatch: narrow the stages, or raise H800_EVIDENCE_MAX_MB deliberately.\n' >&2
         exit 4
     fi
-    ssh_run "cd '$run_dir' && tar --ignore-failed-read --exclude=target --exclude=__pycache__ \
-        --exclude='*.gguf' --exclude='*.safetensors' \
-        -czf - out run.env slurm-*.out slurm-*.err" >"$artifacts/$run_id.tar.gz"
+    ssh_run "cd '$run_dir' && tar --ignore-failed-read $evidence_excludes \
+        -czf - $evidence_paths" >"$artifacts/$run_id.tar.gz" || true
+    if ! tar -tzf "$artifacts/$run_id.tar.gz" >/dev/null 2>&1; then
+        printf 'dispatch: the fetched archive is unreadable; the run directory stays on the cluster\n' >&2
+        printf 'dispatch: receipt %s\n' "$receipt" >&2
+        exit 3
+    fi
+    local_bytes=$(wc -c <"$artifacts/$run_id.tar.gz" | tr -d '[:space:]')
+    if [ "$local_bytes" -gt $(( cap_kib * 1024 )) ]; then
+        printf 'dispatch: fetched %s bytes, over the %s KiB cap; not extracting it.\n' "$local_bytes" "$cap_kib" >&2
+        exit 4
+    fi
+    printf 'fetched    %s (%s bytes)\n' "$artifacts/$run_id.tar.gz" "$local_bytes"
     mkdir -p "$artifacts/$run_id"
     tar -xzf "$artifacts/$run_id.tar.gz" -C "$artifacts/$run_id"
     printf 'evidence   %s\n' "$artifacts/$run_id"
