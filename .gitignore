@@ -30,3 +30,7 @@ weights/
 # Documentation site build and environment
 /site/
 .venv-docs/
+
+# H800 dispatch: fetched evidence and the local settings file
+artifacts/h800/
+tools/h800/h800.env

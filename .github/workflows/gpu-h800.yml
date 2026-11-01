@@ -1,0 +1,122 @@
+name: GPU (H800)
+
+# Manual only, on purpose.
+#
+# This job runs on a self-hosted runner that holds the SSH access to the H800
+# cluster and submits real Slurm jobs there. Two consequences:
+#   * it must never be reachable from a pull request, so there is no `pull_request`
+#     or `push` trigger here;
+#   * the runner is registered on this fork only, so upstream cannot borrow it.
+# A dispatched run costs a real allocation on a shared cluster; read
+# tools/h800/README.md before the first one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stages:
+        description: "Stages to run inside the allocation"
+        type: choice
+        options: ["env", "env,build", "env,build,tier3", "env,build,tests", "env,build,tier3,tests"]
+        default: "env,build"
+      test_args:
+        description: "cargo arguments for the tests stage (empty = skip the stage)"
+        type: string
+        default: ""
+      test_env:
+        description: "Path to a GPU test env file in this repo (optional)"
+        type: string
+        default: ""
+      time_limit:
+        description: "Slurm time limit"
+        type: string
+        default: "00:30:00"
+      gpus:
+        description: "GPUs to request"
+        type: string
+        default: "1"
+      dry_run:
+        description: "Plan only: read-only preflight and printed plan, no submission"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h800-gpu
+  cancel-in-progress: false
+
+jobs:
+  h800:
+    runs-on: [self-hosted, macOS, h800-dispatcher]
+    timeout-minutes: 180
+
+    env:
+      # Repository variables override these defaults, so the runner stays
+      # generic and the cluster paths live in one place.
+      H800_HOST: ${{ vars.H800_HOST || 'h800-login' }}
+      H800_ROOT: ${{ vars.H800_ROOT || '/aifs4su/shiheming/system1-omni/ci-runs' }}
+      H800_PARTITION: ${{ vars.H800_PARTITION || 'training' }}
+      H800_ACCOUNT: ${{ vars.H800_ACCOUNT || 'llm' }}
+      H800_QOS: ${{ vars.H800_QOS || 'for_llm' }}
+      H800_CUDA_MODULE: ${{ vars.H800_CUDA_MODULE || 'cuda/13.0' }}
+      H800_SHARED_TOOLS: ${{ vars.H800_SHARED_TOOLS || '/aifs4su/shiheming/system1-omni/cua-s1-20261001-001/tools' }}
+      H800_STAGES: ${{ inputs.stages }}
+      H800_TEST_ARGS: ${{ inputs.test_args }}
+      H800_TEST_ENV: ${{ inputs.test_env }}
+      H800_TIME: ${{ inputs.time_limit }}
+      H800_GPUS: ${{ inputs.gpus }}
+      H800_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/h800
+      H800_JOB_NAME: omni-h800
+      H800_EVIDENCE_MAX_MB: "512"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Preflight against the cluster (read-only)
+        run: tools/h800/dispatch.sh --check
+
+      - name: Plan the run (nothing is submitted)
+        if: inputs.dry_run
+        run: |
+          tools/h800/dispatch.sh --plan
+          {
+            echo "### H800 plan (dry run)"
+            echo
+            echo "No allocation was requested."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run on the H800
+        if: ${{ !inputs.dry_run }}
+        # Submission is explicit: dispatch.sh prints the plan by default.
+        run: tools/h800/dispatch.sh --submit
+
+      - name: Summarize the evidence
+        if: always()
+        run: |
+          status=$(find "$H800_ARTIFACT_DIR" -path '*/out/stage-status.tsv' -print 2>/dev/null | head -1 || true)
+          summary=$(find "$H800_ARTIFACT_DIR" -path '*/out/summary.json' -print 2>/dev/null | head -1 || true)
+          {
+            echo "### H800 run"
+            echo
+            if [ -n "$status" ] && [ -f "$status" ]; then
+              cat "$status"
+              echo
+            fi
+            if [ -n "$summary" ] && [ -f "$summary" ]; then
+              echo '```json'
+              cat "$summary"
+              echo '```'
+            else
+              echo "No summary.json was fetched: the job left none, or no allocation was ever granted."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: h800-evidence
+          path: artifacts/h800
+          if-no-files-found: ignore
+          retention-days: 30
