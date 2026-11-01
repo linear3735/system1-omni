@@ -27,8 +27,14 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$here/../.." && pwd)
 
 if [ -f "$here/h800.env" ]; then
-    # shellcheck source=/dev/null
-    . "$here/h800.env"
+    # Keys already given in the environment win, as the header promises: the
+    # file only fills the gaps, and an empty value counts as set.
+    while IFS= read -r assignment || [ -n "$assignment" ]; do
+        key=${assignment%%=*}
+        case "$key" in '' | '#'*) continue ;; esac
+        # shellcheck disable=SC2163  # assignment 本身就是 KEY=VALUE，export 收一个词
+        [ -n "${!key+x}" ] || export "$assignment"
+    done <"$here/h800.env"
 fi
 
 # Default to printing the plan: a real submission has to say --submit.
@@ -86,7 +92,9 @@ ssh_run() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "$@"; }
 prologue='[ -f /etc/profile.d/modules.sh ] && . /etc/profile.d/modules.sh; command -v sbatch >/dev/null 2>&1 || module load slurm/slurm >/dev/null 2>&1 || true;'
 
 run_check() {
-    ssh_run bash -s -- "$partition" "$root" <<'REMOTE'
+    # OpenSSH joins the remote command into one string, so an empty argument
+    # disappears on the far side: keep it with %q.
+    ssh_run "bash -s -- $(printf '%q' "$partition") $(printf '%q' "$root")" <<'REMOTE'
 # 集群的 modules 初始化脚本会引用未定义变量，先关掉 -u 再 source，否则整段直接退出。
 set +u
 [ -f /etc/profile.d/modules.sh ] && . /etc/profile.d/modules.sh
@@ -205,7 +213,7 @@ run_job() {
         --partition='$partition' --account='$account' --qos='$qos' \
         --gres='gpu:$gpus' --cpus-per-task='$cpus' --mem='$mem' --time='$time_limit' \
         --chdir='$run_dir' --output='$run_dir/slurm-%j.out' --error='$run_dir/slurm-%j.err' \
-        '$run_dir/run_h800.sbatch'" | tail -1 | cut -d';' -f1)
+        '$run_dir/run_h800.sbatch' '$run_dir'" | tail -1 | cut -d';' -f1)
     case "$job_id" in
         '' | *[!0-9]*) printf 'dispatch: sbatch did not return a job id (%s)\n' "$job_id" >&2; exit 1 ;;
     esac

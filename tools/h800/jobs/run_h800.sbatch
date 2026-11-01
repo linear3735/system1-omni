@@ -20,7 +20,11 @@ set -euo pipefail
 umask 077
 : "${SLURM_JOB_ID:?submit through sbatch}"
 
-run_dir=$(cd "$(dirname "$0")" && pwd)
+# Slurm 把批处理脚本拷进自己的 spool 再执行，$0 因此不是 run 目录：
+# run 目录由 dispatch.sh 作为第一个参数传入，缺省回落到 SLURM_SUBMIT_DIR。
+run_dir=${1:-${SLURM_SUBMIT_DIR:-}}
+[ -n "$run_dir" ] || { printf 'usage: run_h800.sbatch <run-dir>\n' >&2; exit 2; }
+run_dir=$(cd "$run_dir" && pwd)
 # run.env 里是普通赋值，不导出的话 exec 之后的 run_h800.sh 一个都收不到：
 # 实测作业会在分配里立刻以 "RUN_DIR: RUN_DIR is required" 死掉。set -a 覆盖全部键，
 # 包括 STAGES——它若丢失，作业会静默退回脚本自己的默认阶段集。

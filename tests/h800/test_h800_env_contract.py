@@ -135,7 +135,7 @@ class RunEnvContractTest(unittest.TestCase):
                 archive.add(entry, arcname="tools/h800/jobs/run_h800.sh")
 
             result = bash(
-                f"cd {shlex.quote(str(run_dir))} && exec bash {shlex.quote(str(sbatch_copy))}",
+                f"exec bash {shlex.quote(str(sbatch_copy))} {shlex.quote(str(run_dir))}",
                 SLURM_JOB_ID="999999",
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -210,3 +210,57 @@ class EnvTemplateTest(unittest.TestCase):
             self.assertIn(key, sourced, f"{key} 没有被 source 出来")
         for stray in ("pyyaml", "pytest"):
             self.assertNotIn(stray, sourced, f"模板里未加引号的空格值泄漏成了变量 {stray}")
+
+
+class SpoolDirectoryTest(unittest.TestCase):
+    """Slurm 会把脚本拷进自己的 spool 再执行：$0 不再指向 run 目录。"""
+
+    def test_sbatch_survives_a_spool_copy(self) -> None:
+        sbatch = repo_root() / "tools/h800/jobs/run_h800.sbatch"
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            run_dir = tmp / "run"
+            run_dir.mkdir()
+            (run_dir / "run.env").write_text(produced_run_env(tmp, run_dir), encoding="utf-8")
+            spool = tmp / "spool"
+            spool.mkdir()
+            spool_script = spool / "slurm_script"
+            spool_script.write_bytes(sbatch.read_bytes())
+            entry = tmp / "child.sh"
+            entry.write_text(CHILD, encoding="utf-8")
+            entry.chmod(0o755)
+            with tarfile.open(run_dir / "src.tar.gz", "w:gz") as archive:
+                archive.add(entry, arcname="tools/h800/jobs/run_h800.sh")
+            result = bash(
+                f"exec bash {shlex.quote(str(spool_script))} {shlex.quote(str(run_dir))}",
+                SLURM_JOB_ID="999999",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            dump = run_dir / "out" / "child-env.txt"
+            self.assertTrue(dump.is_file(), "spool 拷走后 run.env 没被读到")
+            received = parse_env_dump(dump.read_text(encoding="utf-8"))
+        self.assertEqual(received["STAGES"], "env,probe")
+        self.assertEqual(received["RUN_DIR"], str(run_dir))
+
+    def test_sbatch_falls_back_to_submit_dir(self) -> None:
+        sbatch = repo_root() / "tools/h800/jobs/run_h800.sbatch"
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            run_dir = tmp / "run"
+            run_dir.mkdir()
+            (run_dir / "run.env").write_text(produced_run_env(tmp, run_dir), encoding="utf-8")
+            spool_script = tmp / "slurm_script"
+            spool_script.write_bytes(sbatch.read_bytes())
+            entry = tmp / "child.sh"
+            entry.write_text(CHILD, encoding="utf-8")
+            entry.chmod(0o755)
+            with tarfile.open(run_dir / "src.tar.gz", "w:gz") as archive:
+                archive.add(entry, arcname="tools/h800/jobs/run_h800.sh")
+            result = bash(
+                f"exec bash {shlex.quote(str(spool_script))}",
+                SLURM_JOB_ID="999999",
+                SLURM_SUBMIT_DIR=str(run_dir),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            dump = run_dir / "out" / "child-env.txt"
+            self.assertTrue(dump.is_file(), "SLURM_SUBMIT_DIR 没被当作 run 目录")
