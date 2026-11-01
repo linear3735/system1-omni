@@ -87,8 +87,10 @@ prologue='[ -f /etc/profile.d/modules.sh ] && . /etc/profile.d/modules.sh; comma
 
 run_check() {
     ssh_run bash -s -- "$partition" "$root" <<'REMOTE'
-set -u
+# 集群的 modules 初始化脚本会引用未定义变量，先关掉 -u 再 source，否则整段直接退出。
+set +u
 [ -f /etc/profile.d/modules.sh ] && . /etc/profile.d/modules.sh
+set -u
 command -v sbatch >/dev/null 2>&1 || module load slurm/slurm >/dev/null 2>&1 || true
 partition=$1
 root=$2
